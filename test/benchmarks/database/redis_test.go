@@ -66,7 +66,11 @@ func BenchmarkRedis(b *testing.B) {
 	ctx := context.Background()
 
 	for _, operation := range operations {
-		b.Run(operation, func(b *testing.B) {
+		param := tools.Parameter{
+			Name:  "operation",
+			Value: operation,
+		}
+		b.Run(tools.ParametersToName(b, []tools.Parameter{param}), func(b *testing.B) {
 			server := serverMachine.GetContainer(ctx, b)
 			defer server.CleanUp(ctx)
 
