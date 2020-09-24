@@ -157,6 +157,8 @@ func (s *Stack) Load(args []string, env []string, aux Auxv) (StackLayout, error)
 	}
 	l.EnvvStart = s.Bottom
 
+	s.Align(16)
+
 	// Push our strings.
 	l.ArgvEnd = s.Bottom
 	argAddrs := make([]usermem.Addr, len(args))
