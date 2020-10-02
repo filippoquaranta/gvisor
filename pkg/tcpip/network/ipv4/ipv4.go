@@ -18,6 +18,7 @@ package ipv4
 import (
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/sync"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -30,6 +31,10 @@ import (
 )
 
 const (
+	// RFC 791 originally suggested 15s for reassembly timeout, but we use 30
+	// seconds based on the linux stack: net.ipv4.ipfrag_time.
+	reassembleTimeout = 30 * time.Second
+
 	// ProtocolNumber is the ipv4 protocol number.
 	ProtocolNumber = header.IPv4ProtocolNumber
 
@@ -836,6 +841,6 @@ func NewProtocol(s *stack.Stack) stack.NetworkProtocol {
 		ids:           ids,
 		hashIV:        hashIV,
 		defaultTTL:    DefaultTTL,
-		fragmentation: fragmentation.NewFragmentation(fragmentblockSize, fragmentation.HighFragThreshold, fragmentation.LowFragThreshold, fragmentation.DefaultReassembleTimeout, s.Clock()),
+		fragmentation: fragmentation.NewFragmentation(fragmentblockSize, fragmentation.HighFragThreshold, fragmentation.LowFragThreshold, reassembleTimeout, s.Clock()),
 	}
 }
