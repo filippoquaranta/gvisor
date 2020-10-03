@@ -3675,3 +3675,217 @@ func TestGetMainNICAddressWhenNICDisabled(t *testing.T) {
 		t.Fatalf("got GetMainNICAddress(%d, %d) = %s, want = %s", nicID, fakeNetNumber, gotAddr, protocolAddress.AddressWithPrefix)
 	}
 }
+
+func TestFindRouteWithForwarding(t *testing.T) {
+	const (
+		nicID1 = 1
+		nicID2 = 2
+
+		nic1Addr   = tcpip.Address("\x01")
+		nic2Addr   = tcpip.Address("\x02")
+		remoteAddr = tcpip.Address("\x03")
+	)
+
+	tests := []struct {
+		name string
+
+		forwardingEnabled bool
+
+		addrNIC   tcpip.NICID
+		localAddr tcpip.Address
+
+		findRouteErr          *tcpip.Error
+		dependentOnForwarding bool
+	}{
+		{
+			name:                  "forwarding disabled and localAddr not on specified NIC but route from different NIC",
+			forwardingEnabled:     false,
+			addrNIC:               nicID1,
+			localAddr:             nic2Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr not on specified NIC but route from different NIC",
+			forwardingEnabled:     true,
+			addrNIC:               nicID1,
+			localAddr:             nic2Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding disabled and localAddr on specified NIC but route from different NIC",
+			forwardingEnabled:     false,
+			addrNIC:               nicID1,
+			localAddr:             nic1Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr on specified NIC but route from different NIC",
+			forwardingEnabled:     true,
+			addrNIC:               nicID1,
+			localAddr:             nic1Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: true,
+		},
+		{
+			name:                  "forwarding disabled and localAddr on specified NIC and route from same NIC",
+			forwardingEnabled:     false,
+			addrNIC:               nicID2,
+			localAddr:             nic2Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr on specified NIC and route from same NIC",
+			forwardingEnabled:     true,
+			addrNIC:               nicID2,
+			localAddr:             nic2Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding disabled and localAddr not on specified NIC but route from same NIC",
+			forwardingEnabled:     false,
+			addrNIC:               nicID2,
+			localAddr:             nic1Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr not on specified NIC but route from same NIC",
+			forwardingEnabled:     true,
+			addrNIC:               nicID2,
+			localAddr:             nic1Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding disabled and localAddr on same NIC as route",
+			forwardingEnabled:     false,
+			localAddr:             nic2Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr on same NIC as route",
+			forwardingEnabled:     false,
+			localAddr:             nic2Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding disabled and localAddr on different NIC as route",
+			forwardingEnabled:     false,
+			localAddr:             nic1Addr,
+			findRouteErr:          tcpip.ErrNoRoute,
+			dependentOnForwarding: false,
+		},
+		{
+			name:                  "forwarding enabled and localAddr on different NIC as route",
+			forwardingEnabled:     true,
+			localAddr:             nic1Addr,
+			findRouteErr:          nil,
+			dependentOnForwarding: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := stack.New(stack.Options{
+				NetworkProtocols: []stack.NetworkProtocolFactory{fakeNetFactory},
+			})
+
+			ep1 := channel.New(1, defaultMTU, "")
+			if err := s.CreateNIC(nicID1, ep1); err != nil {
+				t.Fatalf("CreateNIC(%d, _): %s:", nicID1, err)
+			}
+
+			ep2 := channel.New(1, defaultMTU, "")
+			if err := s.CreateNIC(nicID2, ep2); err != nil {
+				t.Fatalf("CreateNIC(%d, _): %s:", nicID2, err)
+			}
+
+			if err := s.AddAddress(nicID1, fakeNetNumber, nic1Addr); err != nil {
+				t.Fatalf("AddAddress(%d, %d, %s): %s", nicID1, fakeNetNumber, nic1Addr, err)
+			}
+
+			if err := s.AddAddress(nicID2, fakeNetNumber, nic2Addr); err != nil {
+				t.Fatalf("AddAddress(%d, %d, %s): %s", nicID2, fakeNetNumber, nic2Addr, err)
+			}
+
+			if err := s.SetForwarding(fakeNetNumber, test.forwardingEnabled); err != nil {
+				t.Fatalf("SetForwarding(%d, %t): %s", fakeNetNumber, test.forwardingEnabled, err)
+			}
+
+			{
+				subnet, err := tcpip.NewSubnet(remoteAddr, "\xff")
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.SetRouteTable([]tcpip.Route{{Destination: subnet, Gateway: "\x00", NIC: nicID2}})
+			}
+
+			r, err := s.FindRoute(test.addrNIC, test.localAddr, remoteAddr, fakeNetNumber, false /* multicastLoop */)
+			if err != test.findRouteErr {
+				t.Fatalf("FindRoute(%d, %s, %s, %d, false) = %s, want = %s", test.addrNIC, test.localAddr, remoteAddr, fakeNetNumber, err, test.findRouteErr)
+			}
+			defer r.Release()
+
+			if test.findRouteErr != nil {
+				return
+			}
+
+			if r.LocalAddress != test.localAddr {
+				t.Errorf("got r.LocalAddress = %s, want = %s", r.LocalAddress, test.localAddr)
+			}
+			if r.RemoteAddress != remoteAddr {
+				t.Errorf("got r.RemoteAddress = %s, want = %s", r.RemoteAddress, remoteAddr)
+			}
+
+			if t.Failed() {
+				t.FailNow()
+			}
+
+			// Sending a packet should always go through NIC2 since we only install a
+			// route to remoteAddr through NIC2.
+			data := buffer.View([]byte{1, 2, 3, 4})
+			if err := send(r, data); err != nil {
+				t.Fatalf("send(_, _): %s", err)
+			}
+			if n := ep1.Drain(); n != 0 {
+				t.Errorf("got %d unexpected packets from ep1", n)
+			}
+			pkt, ok := ep2.Read()
+			if !ok {
+				t.Fatal("packet not sent through ep2")
+			}
+			if pkt.Route.LocalAddress != test.localAddr {
+				t.Errorf("got pkt.Route.LocalAddress = %s, want = %s", pkt.Route.LocalAddress, test.localAddr)
+			}
+			if pkt.Route.RemoteAddress != remoteAddr {
+				t.Errorf("got pkt.Route.RemoteAddress = %s, want = %s", pkt.Route.RemoteAddress, remoteAddr)
+			}
+
+			if !test.forwardingEnabled || !test.dependentOnForwarding {
+				return
+			}
+
+			// Disabling forwarding when the route is dependent on forwarding being
+			// enabled should make the route invalid.
+			if err := s.SetForwarding(fakeNetNumber, false); err != nil {
+				t.Fatalf("SetForwarding(%d, false): %s", fakeNetNumber, err)
+			}
+			if err := send(r, data); err != tcpip.ErrInvalidEndpointState {
+				t.Fatalf("got send(_, _) = %s, want = %s", err, tcpip.ErrInvalidEndpointState)
+			}
+			if n := ep1.Drain(); n != 0 {
+				t.Errorf("got %d unexpected packets from ep1", n)
+			}
+			if n := ep2.Drain(); n != 0 {
+				t.Errorf("got %d unexpected packets from ep2", n)
+			}
+		})
+	}
+}

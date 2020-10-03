@@ -22,6 +22,7 @@ package stack
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	mathrand "math/rand"
 	"sync/atomic"
 	"time"
@@ -1182,6 +1183,11 @@ func (s *Stack) getAddressEP(nic *NIC, localAddr, remoteAddr tcpip.Address, netP
 
 // FindRoute creates a route to the given destination address, leaving through
 // the given nic and local address (if provided).
+//
+// If no remote address was provided, then the stack will use the same address
+// as the local address. If no local address is provided, the stack will choose
+// the local address. If both the remote and local addresses are not provided,
+// the stack will choose both.
 func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, netProto tcpip.NetworkProtocolNumber, multicastLoop bool) (Route, *tcpip.Error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1192,42 +1198,91 @@ func (s *Stack) FindRoute(id tcpip.NICID, localAddr, remoteAddr tcpip.Address, n
 	if id != 0 && !needRoute {
 		if nic, ok := s.nics[id]; ok && nic.Enabled() {
 			if addressEndpoint := s.getAddressEP(nic, localAddr, remoteAddr, netProto); addressEndpoint != nil {
-				return makeRoute(netProto, addressEndpoint.AddressWithPrefix().Address, remoteAddr, nic, addressEndpoint, s.handleLocal && !nic.IsLoopback(), multicastLoop && !nic.IsLoopback()), nil
+				return makeRoute(netProto, addressEndpoint.AddressWithPrefix().Address, remoteAddr, nic, nic, addressEndpoint, s.handleLocal && !nic.IsLoopback(), multicastLoop && !nic.IsLoopback()), nil
 			}
 		}
-	} else {
-		for _, route := range s.routeTable {
-			if (id != 0 && id != route.NIC) || (len(remoteAddr) != 0 && !route.Destination.Contains(remoteAddr)) {
-				continue
-			}
-			if nic, ok := s.nics[route.NIC]; ok && nic.Enabled() {
-				if addressEndpoint := s.getAddressEP(nic, localAddr, remoteAddr, netProto); addressEndpoint != nil {
-					if len(remoteAddr) == 0 {
-						// If no remote address was provided, then the route
-						// provided will refer to the link local address.
-						remoteAddr = addressEndpoint.AddressWithPrefix().Address
-					}
 
-					r := makeRoute(netProto, addressEndpoint.AddressWithPrefix().Address, remoteAddr, nic, addressEndpoint, s.handleLocal && !nic.IsLoopback(), multicastLoop && !nic.IsLoopback())
-					if len(route.Gateway) > 0 {
-						if needRoute {
-							r.NextHop = route.Gateway
-						}
-					} else if subnet := addressEndpoint.AddressWithPrefix().Subnet(); subnet.IsBroadcast(remoteAddr) {
-						r.RemoteLinkAddress = header.EthernetBroadcastAddress
-					}
-
-					return r, nil
-				}
-			}
-		}
-	}
-
-	if !needRoute {
 		return Route{}, tcpip.ErrNetworkUnreachable
 	}
 
-	return Route{}, tcpip.ErrNoRoute
+	constructRoute := func(addressEndpoint AssignableAddressEndpoint, addressNIC, outgoingNIC *NIC, gateway tcpip.Address) Route {
+		// If no remote address is provided, use the local address.
+		if len(remoteAddr) == 0 {
+			remoteAddr = addressEndpoint.AddressWithPrefix().Address
+		}
+
+		r := makeRoute(netProto, addressEndpoint.AddressWithPrefix().Address, remoteAddr, outgoingNIC, addressNIC, addressEndpoint, s.handleLocal && !outgoingNIC.IsLoopback(), multicastLoop && !outgoingNIC.IsLoopback())
+		if len(gateway) > 0 {
+			if needRoute {
+				r.NextHop = gateway
+			}
+		} else if subnet := addressEndpoint.AddressWithPrefix().Subnet(); subnet.IsBroadcast(remoteAddr) {
+			r.RemoteLinkAddress = header.EthernetBroadcastAddress
+		}
+
+		return r
+	}
+
+	forwarding := s.Forwarding(netProto)
+
+	err := tcpip.ErrNoRoute
+	if !needRoute {
+		err = tcpip.ErrNetworkUnreachable
+	}
+
+	var chosenRoute tcpip.Route
+	for _, route := range s.routeTable {
+		if len(remoteAddr) != 0 && !route.Destination.Contains(remoteAddr) {
+			continue
+		}
+
+		nic, ok := s.nics[route.NIC]
+		if !ok || !nic.Enabled() {
+			continue
+		}
+
+		if id == 0 || id == route.NIC {
+			if addressEndpoint := s.getAddressEP(nic, localAddr, remoteAddr, netProto); addressEndpoint != nil {
+				return constructRoute(addressEndpoint, nic, nic, route.Gateway), nil
+			}
+		}
+
+		// If the stack has forwarding enabled and we haven't found a valid route to
+		// the remote address yet, keep track of the first valid route. We keep
+		// iterating because we prefer routes that lets us use a local address that
+		// is assigned to the outgoing interface. There is no requirement to do this
+		// from any RFC but simply a choice made to better follow a strong host
+		// model which the netstack follows at the time of writing.
+		if forwarding && chosenRoute == (tcpip.Route{}) {
+			chosenRoute = route
+		}
+	}
+
+	if chosenRoute == (tcpip.Route{}) {
+		return Route{}, err
+	}
+
+	// At this point we know the stack has forwarding enabled since chosenRoute is
+	// only set when forwarding is enabled.
+	nic, ok := s.nics[chosenRoute.NIC]
+	if !ok {
+		// If the route's NIC was invalid, we should not have chosen the route.
+		panic(fmt.Sprintf("chosen route must have a valid NIC with ID = %d", chosenRoute.NIC))
+	}
+
+	if id == 0 {
+		for _, aNIC := range s.nics {
+			if addressEndpoint := s.getAddressEP(aNIC, localAddr, remoteAddr, netProto); addressEndpoint != nil {
+				return constructRoute(addressEndpoint, aNIC, nic, chosenRoute.Gateway), nil
+			}
+		}
+	} else if aNIC, ok := s.nics[id]; ok {
+		if addressEndpoint := s.getAddressEP(aNIC, localAddr, remoteAddr, netProto); addressEndpoint != nil {
+			return constructRoute(addressEndpoint, aNIC, nic, chosenRoute.Gateway), nil
+		}
+	}
+
+	return Route{}, err
 }
 
 // CheckNetworkProtocol checks if a given network protocol is enabled in the
