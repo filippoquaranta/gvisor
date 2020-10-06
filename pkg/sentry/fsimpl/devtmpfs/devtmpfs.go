@@ -62,6 +62,7 @@ func (fst *FilesystemType) GetFilesystem(ctx context.Context, vfsObj *vfs.Virtua
 		}
 		fst.fs = fs
 		fst.root = root
+		vfsObj.SetDevtmpfs(fs, root)
 	})
 	if fst.initErr != nil {
 		return nil, nil, fst.initErr

@@ -1738,3 +1738,25 @@ func (k *Kernel) ShmMount() *vfs.Mount {
 func (k *Kernel) SocketMount() *vfs.Mount {
 	return k.socketMount
 }
+
+// Release drops references on filesystem objects held by k.
+func (k *Kernel) Release() {
+	ctx := k.SupervisorContext()
+	if k.hostMount != nil {
+		k.hostMount.DecRef(ctx)
+	}
+	if k.pipeMount != nil {
+		k.pipeMount.DecRef(ctx)
+	}
+	if k.shmMount != nil {
+		k.shmMount.DecRef(ctx)
+	}
+	if k.socketMount != nil {
+		k.socketMount.DecRef(ctx)
+	}
+	k.vfs.Release(ctx)
+	k.timekeeper.Destroy()
+	if k.vdso != nil {
+		k.vdso.Release(ctx)
+	}
+}

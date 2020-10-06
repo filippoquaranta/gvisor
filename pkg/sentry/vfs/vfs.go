@@ -120,6 +120,12 @@ type VirtualFilesystem struct {
 	// filesystemsMu.
 	filesystemsMu sync.Mutex `state:"nosave"`
 	filesystems   map[*Filesystem]struct{}
+
+	// devtmpfs and devtmpfsRoot correspond to vfs's devtmpfs filesystem. vfs holds
+	// a reference on each, and these fields are only stored so that the reference
+	// can be dropped by vfs.Release(). They are immutable after being set.
+	devtmpfs     *Filesystem
+	devtmpfsRoot *Dentry
 }
 
 // Init initializes a new VirtualFilesystem with no mounts or FilesystemTypes.
@@ -156,6 +162,23 @@ func (vfs *VirtualFilesystem) Init(ctx context.Context) error {
 	vfs.anonMount = anonMount
 
 	return nil
+}
+
+// Release drops references on filesystem objects held by vfs.
+func (vfs *VirtualFilesystem) Release(ctx context.Context) {
+	if vfs.anonMount != nil {
+		vfs.anonMount.DecRef(ctx)
+	}
+	if vfs.devtmpfs != nil {
+		vfs.devtmpfs.DecRef(ctx)
+		vfs.devtmpfsRoot.DecRef(ctx)
+	}
+}
+
+// SetDevtmpfs stores the devtmpfs filesystem and root for vfs.
+func (vfs *VirtualFilesystem) SetDevtmpfs(fs *Filesystem, root *Dentry) {
+	vfs.devtmpfs = fs
+	vfs.devtmpfsRoot = root
 }
 
 // PathOperation specifies the path operated on by a VFS method.
