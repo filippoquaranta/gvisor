@@ -865,6 +865,8 @@ func (t *Task) MountNamespace() *fs.MountNamespace {
 
 // MountNamespaceVFS2 returns t's MountNamespace. A reference is taken on the
 // returned mount namespace.
+//
+// TODO(gvisor.dev/issue/4438): Don't take a reference here.
 func (t *Task) MountNamespaceVFS2() *vfs.MountNamespace {
 	t.mu.Lock()
 	defer t.mu.Unlock()

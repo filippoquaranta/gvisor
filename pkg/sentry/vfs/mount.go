@@ -46,8 +46,9 @@ import (
 // +stateify savable
 type Mount struct {
 	// vfs, fs, root are immutable. References are held on fs and root.
+	// Note that for a disconnected mount, root may be nil.
 	//
-	// Invariant: root belongs to fs.
+	// Invariant: if not nil, root belongs to fs.
 	vfs  *VirtualFilesystem
 	fs   *Filesystem
 	root *Dentry
@@ -498,7 +499,9 @@ func (mnt *Mount) DecRef(ctx context.Context) {
 			mnt.vfs.mounts.seq.EndWrite()
 			mnt.vfs.mountMu.Unlock()
 		}
-		mnt.root.DecRef(ctx)
+		if mnt.root != nil {
+			mnt.root.DecRef(ctx)
+		}
 		mnt.fs.DecRef(ctx)
 		if vd.Ok() {
 			vd.DecRef(ctx)
@@ -726,6 +729,8 @@ func (mnt *Mount) Root() *Dentry {
 
 // Root returns mntns' root. A reference is taken on the returned
 // VirtualDentry.
+//
+// TODO(gvisor.dev/issue/4438): Don't take a reference here.
 func (mntns *MountNamespace) Root() VirtualDentry {
 	vd := VirtualDentry{
 		mount:  mntns.root,
