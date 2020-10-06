@@ -303,6 +303,17 @@ func (e *endpoint) handleICMP(r *stack.Route, pkt *stack.PacketBuffer, hasFragme
 		// multicast the advertisement to the all-nodes address.
 		solicited := true
 		if unspecifiedSource {
+			// As per RF 4861 section 7.1.1,
+			// A node MUST silently discard any received Neighbor Solicitation
+			// messages that do not satisfy all of the following validity
+			// checks:
+			// ... - If the IP source address is unspecified address, the IP
+			// destination address is a solicited-node multicast address
+			if !header.IsSolicitedNodeAddr(r.LocalAddress) {
+				received.Invalid.Increment()
+				return
+			}
+
 			solicited = false
 			r.RemoteAddress = header.IPv6AllNodesMulticastAddress
 		}
